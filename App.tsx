@@ -15,7 +15,7 @@ const ARTIST_PASSWORD = 'muse';
 
 const PUBLIC_REPO_CONFIG: RepoConfig = {
   owner: 'etwashoo',
-  repo: 'aw5',
+  repo: 'aw7',
   branch: 'main',
 };
 

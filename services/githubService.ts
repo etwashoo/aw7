@@ -10,7 +10,7 @@ const utf8_to_b64 = (str: string) => {
     return btoa(binString);
   } catch (e) {
     console.error("Encoding error", e);
-    // Fallback for older browsers if needed, though modern ones support TextEncoder
+    // Fallback for older browsers
     return window.btoa(unescape(encodeURIComponent(str)));
   }
 };
@@ -175,8 +175,15 @@ export const updateProfile = async (profile: ArtistProfile, config: RepoConfig):
     }
 };
 
-export const verifyRepoAccess = async (config: RepoConfig): Promise<boolean> => {
-  if (!config.token) return false;
+export interface RepoValidationResult {
+    isValid: boolean;
+    error?: string;
+    defaultBranch?: string;
+    isPrivate?: boolean;
+}
+
+export const verifyRepoAccess = async (config: RepoConfig): Promise<RepoValidationResult> => {
+  if (!config.token) return { isValid: false, error: "Kein Token vorhanden" };
   const owner = config.owner.trim();
   const repo = config.repo.trim();
   try {
@@ -186,18 +193,28 @@ export const verifyRepoAccess = async (config: RepoConfig): Promise<boolean> => 
         'Accept': 'application/vnd.github.v3+json'
       }
     });
-    // Check for push permissions if available in response
+    
     if (response.ok) {
         const data = await response.json();
+        
+        // Check permissions
         if (data.permissions && data.permissions.push === false) {
-            console.warn("User has read but not write access");
-            return false;
+            return { isValid: false, error: "Token hat nur Lese-Rechte (Read-Only). Bitte 'Repo' Scope (Classic) oder 'Contents: Write' (Fine-grained) aktivieren." };
         }
-        return true;
+
+        return { 
+            isValid: true, 
+            defaultBranch: data.default_branch,
+            isPrivate: data.private
+        };
+    } else if (response.status === 404) {
+        return { isValid: false, error: "Repository nicht gefunden (404). Prüfen Sie Name und Token-Zugriffsrechte." };
+    } else if (response.status === 401) {
+        return { isValid: false, error: "Token ungültig (401). Bitte prüfen." };
     }
-    return false;
-  } catch (e) {
-    return false;
+    return { isValid: false, error: `API Fehler: ${response.status}` };
+  } catch (e: any) {
+    return { isValid: false, error: e.message || "Verbindungsfehler" };
   }
 };
 
@@ -214,7 +231,11 @@ export const uploadImageToGitHub = async (
   const token = config.token.trim();
 
   const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '').toLowerCase();
-  const path = `images/${Date.now()}-${cleanName}`;
+  // Ensure we don't end up with an empty name or just extension
+  const safeName = cleanName.length < 4 ? `img-${Date.now()}.jpg` : cleanName;
+  const path = `images/${Date.now()}-${safeName}`;
+
+  console.log(`Uploading to: ${BASE_URL}/repos/${owner}/${repo}/contents/${path}`);
 
   const response = await fetch(`${BASE_URL}/repos/${owner}/${repo}/contents/${path}`, {
     method: 'PUT',
@@ -223,18 +244,23 @@ export const uploadImageToGitHub = async (
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      message: `Upload artwork: ${cleanName}`,
+      message: `Upload artwork: ${safeName}`,
       content: base64Content,
       branch: branch
     })
   });
 
   if (!response.ok) {
-    const error = await response.json();
+    const errorBody = await response.json().catch(() => ({}));
+    console.error("GitHub Upload Error:", response.status, errorBody);
+
     if (response.status === 404) {
-        throw new Error(`Repository '${owner}/${repo}' nicht gefunden (404). Existiert der Branch '${branch}'? (Tipp: Falls neu, erstellen Sie eine README auf GitHub!)`);
+        throw new Error(`Fehler 404: Repository '${owner}/${repo}' nicht gefunden oder Zugriff verweigert.\n1. Prüfen Sie, ob der Branch '${branch}' existiert.\n2. WICHTIG: Hat Ihr Token 'Write'-Rechte? (Fine-grained Tokens brauchen 'Contents: Read & Write').`);
     }
-    throw new Error(error.message || "Fehler beim Bild-Upload");
+    if (response.status === 422) {
+        throw new Error("Fehler 422: Validierung gescheitert. Möglicherweise ist das Bild zu groß für die API? (Wir komprimieren es automatisch, aber versuchen Sie ein kleineres Bild).");
+    }
+    throw new Error(errorBody.message || `Upload fehlgeschlagen (${response.status})`);
   }
 
   return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;

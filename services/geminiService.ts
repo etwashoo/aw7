@@ -17,8 +17,13 @@ export const fileToGenerativePart = async (file: File): Promise<string> => {
 };
 
 export const generateArtworkMetadata = async (base64Image: string, mimeType: string): Promise<GeneratedMetadata> => {
-  // Initialize on demand to ensure environment is ready and avoid top-level crashes
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // Access API_KEY safely inside the function scope
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    throw new Error("API Key ist nicht konfiguriert.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
   const model = "gemini-2.5-flash";
   
   const responseSchema: Schema = {
@@ -55,7 +60,7 @@ export const generateArtworkMetadata = async (base64Image: string, mimeType: str
       config: {
         responseMimeType: "application/json",
         responseSchema: responseSchema,
-        systemInstruction: "Du bist ein professioneller Kunstkurator. Dein Ton ist elegant, einfühlsam und auf die malerischen Qualitäten des Werks fokussiert. Besprich Textur, Licht und Komposition. Vermeide generische Phrasen wie 'Dieses Bild zeigt'. Die Beschreibung darf maximal 50 Wörter lang sein. Antworte ausschließlich auf Deutsch.",
+        systemInstruction: "Du bist ein professioneller Kunstkurator. Dein Ton ist elegant, einfühlsam und auf die malerischen Qualitäten des Werks fokussiert. Besprich Textur, Licht und Komposition. Vermeide generische Phrasen wie 'Dieses Bild zeigt'. Die Beschreibung darf maximal 50 Wörter lang sein. Wenn das Medium unklar ist, schlage 'Acryl auf Leinwand' vor. Antworte ausschließlich auf Deutsch.",
       }
     });
 

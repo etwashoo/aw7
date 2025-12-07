@@ -12,6 +12,43 @@ interface AdminPanelProps {
   onLogout: () => void;
 }
 
+// Client-side image compression/resizing
+const resizeImage = (file: File, maxWidth: number = 1600): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
+                
+                if (width > maxWidth) {
+                    height = Math.round(height * (maxWidth / width));
+                    width = maxWidth;
+                }
+                
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    reject(new Error("Could not get canvas context"));
+                    return;
+                }
+                ctx.drawImage(img, 0, 0, width, height);
+                
+                // standard JPEG quality 0.8
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                resolve(dataUrl.split(',')[1]); // return base64 only
+            };
+            img.onerror = () => reject(new Error("Failed to load image for resizing"));
+            img.src = event.target?.result as string;
+        };
+        reader.onerror = () => reject(new Error("Failed to read file"));
+        reader.readAsDataURL(file);
+    });
+}
+
 export const AdminPanel: React.FC<AdminPanelProps> = ({ 
   artworks, 
   repoConfig, 
@@ -83,6 +120,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setIsAnalysing(true);
     setError(null);
     try {
+      // Use original file for analysis (better quality)
       const base64Data = await fileToGenerativePart(file);
       const metadata = await generateArtworkMetadata(base64Data, file.type);
       setTitle(metadata.title);
@@ -112,9 +150,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setIsUploading(true);
     setUploadStatus('Vorbereitung...');
     try {
-        const base64Data = await fileToGenerativePart(file);
+        // Compress image before upload to avoid GitHub API 1MB limit for content endpoints
+        setUploadStatus('Optimiere Bildgröße...');
+        const base64Data = await resizeImage(file);
+        
         setUploadStatus('Lade Bild zu GitHub hoch...');
         const imageUrl = await uploadImageToGitHub(file, base64Data, repoConfig);
+        
         setUploadStatus('Aktualisiere Galerie-Manifest...');
         const newArtwork: Artwork = {
             id: crypto.randomUUID(),
@@ -188,12 +230,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           let aboutUrl = currentProfile.aboutImageUrl || '';
           
           if (featuredFile) {
-              const base64 = await fileToGenerativePart(featuredFile);
+              const base64 = await resizeImage(featuredFile);
               featuredUrl = await uploadImageToGitHub(featuredFile, base64, repoConfig);
           }
 
           if (aboutFile) {
-              const base64 = await fileToGenerativePart(aboutFile);
+              const base64 = await resizeImage(aboutFile);
               aboutUrl = await uploadImageToGitHub(aboutFile, base64, repoConfig);
           }
 
@@ -228,12 +270,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           branch: (localConfig.branch || 'main').trim(),
           token: localConfig.token?.trim()
       };
-      setLocalConfig(cleanConfig);
+      // Don't set state yet, verify first using clean values
 
       try {
-          const isValid = await verifyRepoAccess(cleanConfig);
-          if (isValid) {
-              // Verify branch existence
+          const result = await verifyRepoAccess(cleanConfig);
+          
+          if (result.isValid) {
+              // Auto-correct branch if we found a default branch and user didn't specify one or specified wrong one
+              if (result.defaultBranch && result.defaultBranch !== cleanConfig.branch) {
+                  console.log(`Auto-correcting branch from '${cleanConfig.branch}' to '${result.defaultBranch}'`);
+                  cleanConfig.branch = result.defaultBranch;
+              }
+
+              // Double check if the branch actually exists (if not empty repo)
               const branchExists = await checkBranchExists(cleanConfig);
               if (!branchExists) {
                   setError(`Branch '${cleanConfig.branch}' existiert nicht. Ist das Repository leer? Erstellen Sie eine README-Datei auf GitHub.`);
@@ -241,20 +290,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   return;
               }
 
-              const details = await getRepoDetails(cleanConfig);
-              if (details && details.private) {
+              if (result.isPrivate) {
                 setRepoWarning("Warnung: Dieses Repository ist PRIVAT. Bilder sind öffentlich nicht sichtbar.");
               }
+
+              setLocalConfig(cleanConfig);
               onConfigChange(cleanConfig);
               setConfigSuccess(true);
-              if (!details?.private) {
+              if (!result.isPrivate) {
                 setTimeout(() => setActiveTab('upload'), 1000);
               }
           } else {
-              setError("Zugriff verweigert. Bitte Owner, Repo und Token prüfen. (Benötigt 'Write' Rechte)");
+              setError(result.error || "Zugriff verweigert.");
           }
-      } catch (e) {
-          setError("Verifizierung fehlgeschlagen.");
+      } catch (e: any) {
+          setError("Verifizierung fehlgeschlagen: " + e.message);
       } finally {
           setIsVerifying(false);
       }
@@ -315,16 +365,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <div>
                     <label className="block text-sm font-medium text-stone-700 mb-1">Branch (Zweig)</label>
                     <input type="text" value={localConfig.branch} onChange={(e) => setLocalConfig({...localConfig, branch: e.target.value})} className="w-full px-4 py-2 border border-stone-300 rounded outline-none" placeholder="main"/>
+                    <p className="text-xs text-stone-400 mt-1">Wird beim Speichern automatisch korrigiert.</p>
                   </div>
                   <div className="pt-2">
                     <label className="block text-sm font-medium text-stone-700 mb-1">GitHub Token (Classic)</label>
                     <input type="password" value={localConfig.token || ''} onChange={(e) => setLocalConfig({...localConfig, token: e.target.value})} className="w-full px-4 py-2 border border-stone-300 rounded outline-none" placeholder="ghp_..."/>
+                    <p className="text-xs text-stone-500 mt-1">Benötigt 'repo' Rechte.</p>
                   </div>
                   <div className="pt-4 mt-4 border-t border-stone-100">
                       <button onClick={saveSettings} disabled={isVerifying} className={`w-full py-2 rounded font-medium text-white transition-colors ${configSuccess ? 'bg-green-600' : 'bg-stone-900 hover:bg-stone-800'}`}>
                           {isVerifying ? 'Verifiziere...' : configSuccess ? 'Verbunden!' : 'Konfiguration speichern'}
                       </button>
-                      {error && <p className="text-red-500 text-sm mt-2 text-center">{error}</p>}
+                      {error && <div className="p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm mt-3 whitespace-pre-wrap">{error}</div>}
                       {repoWarning && <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded text-yellow-800 text-sm">{repoWarning}</div>}
                   </div>
                   {configSuccess && (
@@ -445,7 +497,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                         <div>
                             <p className="text-lg font-medium text-stone-900">Gemälde hochladen</p>
-                            <p className="text-sm text-stone-500">JPG, PNG bis zu 5MB</p>
+                            <p className="text-sm text-stone-500">JPG, PNG (automatische Komprimierung)</p>
                         </div>
                     </div>
                 )}
@@ -463,7 +515,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             )}
             
             {error && (
-                <div className="p-4 bg-red-50 border border-red-200 rounded text-red-700 text-sm text-center">
+                <div className="p-4 bg-red-50 border border-red-200 rounded text-red-700 text-sm text-center whitespace-pre-wrap">
                     <p className="font-bold mb-1">Fehler:</p>
                     {error}
                 </div>

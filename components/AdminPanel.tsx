@@ -108,10 +108,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setError("GitHub Token fehlt. Bitte Einstellungen prüfen.");
         return;
     }
-    if (repoConfig.owner === 'etwashoo') {
-        setError("Standard-Konfiguration erkannt. Bitte gehen Sie zu 'Einstellungen' und speichern Sie Ihren eigenen GitHub-Benutzernamen.");
-        return;
-    }
 
     setIsUploading(true);
     setUploadStatus('Vorbereitung...');
@@ -233,12 +229,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           token: localConfig.token?.trim()
       };
       setLocalConfig(cleanConfig);
-
-      if (cleanConfig.owner === 'etwashoo') {
-          setError("Bitte ändern Sie den Benutzernamen von 'etwashoo' zu Ihrem eigenen GitHub Namen.");
-          setIsVerifying(false);
-          return;
-      }
 
       try {
           const isValid = await verifyRepoAccess(cleanConfig);
